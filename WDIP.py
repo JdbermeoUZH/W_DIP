@@ -59,6 +59,8 @@ for f in files_source:
     imgname = os.path.splitext(imgname)[0]
 
     k_name = imgname
+    #########################
+    ### DELETE FROM HERE
     if opt.dataset_name == 'real':
         opt.kernel_size = [51, 51]
     else:
@@ -82,6 +84,8 @@ for f in files_source:
         y = np.expand_dims(y, 0)
         img_size = y.shape
         y = np_to_torch(y).to(device)
+    ### DELETE TO HERE
+    ####################
 
     print(imgname)
     #######################################################################
@@ -133,6 +137,8 @@ for f in files_source:
     out_k_m = out_k.view(-1, 1, opt.kernel_size[0], opt.kernel_size[1])
     out_y = nn.functional.conv2d(out_x, out_k_m, padding=0, bias=None)
 
+    #########################
+    ### DELETE FROM HERE
     # Initialization for Inner-Loop Generation
     gauss = guass_gen(k_size=(opt.kernel_size[0], opt.kernel_size[1]), var=3, samp_size=(opt.Gsize, opt.Gsize))
     psf_gauss = torch.from_numpy(gauss)[None, None, :].to(device).type(torch.float32)
@@ -145,10 +151,14 @@ for f in files_source:
     schedulerVar = MultiStepLR(optimizerVar, milestones=[k_sch*70, k_sch*(70 + 50), k_sch*(70 + 2*50)], gamma=10)
     psf_temp = torch.abs(param_img[0]) / torch.sum(torch.abs(param_img[0]))
     img_deconv = wienerF_otf(y, psf_temp, device)
+    ### DELETE TO HERE
+    ####################
 
     ### start SelfDeblur
     for step in tqdm(range(num_iter)):
 
+        #########################
+        ### DELETE FROM HERE
         #DIP-Optimization
         L_mse_G_outk_gen, k_num, mov_ker, tar_ker = shifter_kernel(torch.flip(psf_temp, [3, 2]).detach(), out_k_m, int(padh / 2))
         mov_img, tar_img = shifter_Kinput(img_deconv.detach(),
@@ -156,6 +166,8 @@ for f in files_source:
                                           k_num, maxshift=int(padh / 2))
         L_mse_X_outx_gen = mse(mov_img.detach(), tar_img)
         L_mse_X_outx_gen_SSIM = 1 - ssim(mov_img.detach(), tar_img)
+        ### DELETE TO HERE
+        ####################
 
         L_MSE = mse(out_y, y)
         L_SSIM = 1 - ssim(out_y, y)
@@ -170,6 +182,8 @@ for f in files_source:
         scheduler.step(step)
         optimizer.zero_grad()
 
+        #########################
+        ### DELETE FROM HERE
         #Wiener-Deconvolution Optimization
         net_input = net_input_saved + reg_noise_std * torch.zeros(net_input_saved.shape).type_as(net_input_saved.data).normal_()
         out_x = net(net_input)
@@ -198,8 +212,12 @@ for f in files_source:
         psf_temp = torch.abs(param_img[0]) / torch.sum(torch.abs(param_img[0]))
         img_deconv = wienerF_otf(y, psf_temp, device)
 
+        ### DELETE TO HERE
+        ####################
 
         if (step+1) % opt.save_frequency == 0:
+            ######################
+            ### DELETE FROM HERE
             if opt.channels == 3:
                 save_path = os.path.join(path_save_f, '%s_x_'%imgname + str(step) + '.png')
                 out_x_np = torch_to_np(out_x)
@@ -210,6 +228,8 @@ for f in files_source:
                 out_x_np = cv2.merge([out_x_np, cr, cb])
                 out_x_np = cv2.cvtColor(out_x_np, cv2.COLOR_YCrCb2BGR)
                 cv2.imwrite(save_path, out_x_np)
+            ### DELETE TO HERE
+            ####################
 
             save_path = os.path.join(path_save_f, '%s_k'%imgname + '.png')
             out_k_np = torch_to_np(out_k_m)
