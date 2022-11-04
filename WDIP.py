@@ -1,6 +1,9 @@
 from __future__ import print_function
 import argparse
 import os
+
+import pandas
+
 from networks.skip import skip
 from networks.fcn import *
 import glob
@@ -8,15 +11,16 @@ from skimage.io import imsave
 import warnings
 from tqdm import tqdm
 from torch.optim.lr_scheduler import MultiStepLR
+import pandas as pd
+
 from utils.common_utils import *
 from utils.SSIM import SSIM
-import yaml
 from utils.deconv_utils import wienerF_otf, shifter_kernel, shifter_Kinput, guass_gen
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_iter', type=int, default=5000, help='number of epochs of training')
 parser.add_argument('--img_size', type=int, default=[256, 256], help='size of each image dimension')
-parser.add_argument('--kernel_size', type=int, default=[21, 21], help='size of blur kernel [height, width]')
+parser.add_argument('--kernel_size', type=int, default=[21, 21], nargs='+', help='size of blur kernel [height, width]')
 parser.add_argument('--data_path', type=str, default="datasets/levin/blur/", help='path to blurry image')
 parser.add_argument('--save_path', type=str, default="results/levin/", help='path to save results')
 parser.add_argument('--ksize_path', type=str, default="kernel_estimates/levin_kernel.yaml", help='path to save results')
@@ -26,7 +30,7 @@ parser.add_argument('--dataset_name', type=str, default='levin', help='iteration
 parser.add_argument('--channels', type=int, default=1, help='Number of colour channels')
 parser.add_argument('--seed', type=int, default=100, help='seed chosen')
 parser.add_argument('--Gsize', type=float, default=10, help='size of the standard gaussian to be subsampled')
-parser.add_argument('--wa', type=float, default=1e-3, help='weight for deconv-img and gen-img compparison')
+parser.add_argument('--wa', type=float, default=1e-3, help='weight for deconv-img and gen-img comparisson')
 parser.add_argument('--wb', type=float, default=1e-4, help='weight for kernel comparison')
 parser.add_argument('--wk', type=float, default=1e-3, help='weight for L2 norm of inner-loop kernel')
 opt = parser.parse_args()
@@ -59,19 +63,6 @@ for f in files_source:
     imgname = os.path.splitext(imgname)[0]
 
     k_name = imgname
-    #########################
-    ### DELETE FROM HERE
-    if opt.dataset_name == 'real':
-        opt.kernel_size = [51, 51]
-    else:
-        stream = open(opt.ksize_path, 'r')
-        dict_ksize = yaml.load(stream, Loader=yaml.FullLoader)
-        if opt.dataset_name == 'sun':
-            k_name = os.path.basename(f).split('_')[1]
-
-        for key in dict_ksize:
-            if k_name.find(key) != -1:
-                opt.kernel_size = dict_ksize[key]
     print(opt.kernel_size)
 
     if opt.channels == 1:
@@ -92,9 +83,12 @@ for f in files_source:
     padw, padh = opt.kernel_size[0]-1, opt.kernel_size[1]-1
     opt.img_size[0], opt.img_size[1] = img_size[1]+padw, img_size[2]+padh
 
-    path_save_f = opt.save_path #+ imgname + '/'
+    path_save_kernel = os.path.join(save_path, imgname, 'kernel')
+    path_save_image = os.path.join(save_path, imgname, 'image')
+    os.makedirs(path_save_kernel, exist_ok=True)
+    os.makedirs(path_save_image, exist_ok=True)
 
-    '''
+    '''path_save_kernel
     x_net:
     '''
     input_depth = 8
@@ -154,6 +148,14 @@ for f in files_source:
     ### DELETE TO HERE
     ####################
 
+    loss_history = {
+        'total': [],
+        'data_fitting_term': [],
+        'wiener_term': [],
+        'gen_kernel_similarity_to_init_kernel': [],
+        'l2_reg_kernel': []
+    }
+
     ### start SelfDeblur
     for step in tqdm(range(num_iter)):
 
@@ -174,8 +176,15 @@ for f in files_source:
 
         if step < opt.loss_switch:
             total_loss = L_MSE + opt.wa * L_mse_X_outx_gen + opt.wb * L_mse_G_outk_gen
+            loss_history['data_fitting_term'].append(L_MSE.item())
+            loss_history['wiener_term'].append((opt.wa * L_mse_X_outx_gen).item())
         else:
             total_loss = L_SSIM + opt.wa * L_mse_X_outx_gen_SSIM + opt.wb * L_mse_G_outk_gen
+            loss_history['data_fitting_term'].append(L_SSIM.item())
+            loss_history['wiener_term'].append((opt.wa * L_mse_X_outx_gen_SSIM).item())
+
+        loss_history['total'].append(total_loss.item())
+        loss_history['gen_kernel_similarity_to_init_kernel'].append((opt.wb * L_mse_G_outk_gen).item())
 
         total_loss.backward()
         optimizer.step()
@@ -204,6 +213,8 @@ for f in files_source:
         else:
             L_G = opt.wa * L_mse_X_outx_G_SSIM + opt.wb * L_mse_G_outk_G + opt.wk*L_Kreg
 
+        loss_history['l2_reg_kernel'].append((opt.wk*L_Kreg).item())
+
         L_G.backward()
         optimizerVar.step()
         optimizerVar.zero_grad()
@@ -215,11 +226,9 @@ for f in files_source:
         ### DELETE TO HERE
         ####################
 
-        if (step+1) % opt.save_frequency == 0:
-            ######################
-            ### DELETE FROM HERE
+        if step % opt.save_frequency == 0:
             if opt.channels == 3:
-                save_path = os.path.join(path_save_f, '%s_x_'%imgname + str(step) + '.png')
+                img_path = os.path.join(path_save_image, f'step_{str(step)}.png')
                 out_x_np = torch_to_np(out_x)
                 out_x_np = out_x_np.squeeze()
                 cropw, croph = padw, padh
@@ -227,24 +236,39 @@ for f in files_source:
                 out_x_np = np.uint8(255 * out_x_np)
                 out_x_np = cv2.merge([out_x_np, cr, cb])
                 out_x_np = cv2.cvtColor(out_x_np, cv2.COLOR_YCrCb2BGR)
-                cv2.imwrite(save_path, out_x_np)
-            ### DELETE TO HERE
-            ####################
+                cv2.imwrite(img_path, out_x_np)
 
-            save_path = os.path.join(path_save_f, '%s_k'%imgname + '.png')
-            out_k_np = torch_to_np(out_k_m)
-            out_k_np = out_k_np.squeeze()
-            out_k_np /= np.max(out_k_np)
-            imsave(save_path, out_k_np)
+            else:
+                # Save kernel
+                img_path = os.path.join(path_save_kernel, f'step_{str(step)}.png')
+                out_k_np = torch_to_np(out_k_m)
+                out_k_np = out_k_np.squeeze()
+                out_k_np /= np.max(out_k_np)
+                imsave(img_path, out_k_np)
 
-            save_path = os.path.join(path_save_f, '%s_x'%imgname + '.png')
-            out_x_np = torch_to_np(out_x)
-            out_x_np = out_x_np.squeeze()
-            out_x_np = out_x_np[padh//2:padh//2+img_size[1], padw//2:padw//2+img_size[2]]
-            imsave(save_path, out_x_np)
+                # Save image
+                img_path = os.path.join(path_save_image, f'step_{str(step)}.png')
+                out_x_np = torch_to_np(out_x)
+                out_x_np = out_x_np.squeeze()
+                out_x_np = out_x_np[padh // 2:padh // 2 + img_size[1], padw // 2:padw // 2 + img_size[2]]
+                imsave(img_path, out_x_np)
 
-            # torch.save(net, os.path.join(path_save_f, "%s_xnet.pth" % imgname))
-            # torch.save(net_kernel, os.path.join(path_save_f, "%s_knet.pth" % imgname))
+    img_path = os.path.join(path_save_kernel, 'last_step.png')
+    out_k_np = torch_to_np(out_k_m)
+    out_k_np = out_k_np.squeeze()
+    out_k_np /= np.max(out_k_np)
+    imsave(img_path, out_k_np)
+
+    img_path = os.path.join(path_save_image, f'last_step.png')
+    out_x_np = torch_to_np(out_x)
+    out_x_np = out_x_np.squeeze()
+    out_x_np = out_x_np[padh//2:padh//2+img_size[1], padw//2:padw//2+img_size[2]]
+    imsave(img_path, out_x_np)
+
+    # Store history of loss tems and loss function
+    pd.DataFrame(loss_history).to_csv(
+        os.path.join(os.path.dirname(path_save_image), 'loss_history.csv')
+    )
 
     del out_x
     del out_y
