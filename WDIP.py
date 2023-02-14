@@ -178,8 +178,6 @@ for f in files_source:
         'gen_kernel_similarity_to_init_kernel_wo_weight': [],
         'l2_reg_kernel_w_weight': [],
         'l2_reg_kernel_wo_weight': [],
-        'blurred_img_to_ground_truth': [],
-        'wiener_deconv_estim_to_ground_truth': [],
         'estim_img_to_ground_truth_mse': [],
         'estim_img_to_ground_truth_psnr': [],
         'estim_img_to_ground_truth_ssim': [],
@@ -188,7 +186,8 @@ for f in files_source:
         'blurred_img_to_ground_truth_ssim': [],
         'wiener_deconv_estim_to_ground_truth_mse': [],
         'wiener_deconv_estim_to_ground_truth_psnr': [],
-        'wiener_deconv_estim_to_ground_truth_ssim': []
+        'wiener_deconv_estim_to_ground_truth_ssim': [],
+        'shift_k_num': []
     }
 
     ### start SelfDeblur
@@ -198,10 +197,6 @@ for f in files_source:
         #DIP-Optimization
         # Calculate shift and least error of the kernel
         L_mse_G_outk_gen, k_num, mov_ker, tar_ker = shifter_kernel(torch.flip(psf_temp, [3, 2]).detach(), out_k_m, int(padh / 2))
-
-        if k_num.item() != 220:
-            print('stop')
-            print('stooop')
 
         # Shift the deconvoluted image too
         mov_img, tar_img = shifter_Kinput(img_deconv.detach(),
@@ -242,7 +237,7 @@ for f in files_source:
         loss_history['wiener_deconv_estim_to_ground_truth_mse'] = mse_loss(img_deconv, y_gt).item()
         loss_history['wiener_deconv_estim_to_ground_truth_psnr'] = peak_signal_noise_ratio(img_deconv, y_gt).item()
         loss_history['wiener_deconv_estim_to_ground_truth_ssim'] = ssim(img_deconv, y_gt).item()
-
+        loss_history['shift_k_num'] = k_num.item() - 220
 
         total_loss.backward()
         optimizer.step()
