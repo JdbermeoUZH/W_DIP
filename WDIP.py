@@ -93,7 +93,9 @@ for f in files_source:
     '''
     input_depth = 8
     net_input = get_noise(input_depth, INPUT, (opt.img_size[0], opt.img_size[1])).to(device)
-    net = skip( input_depth, 1,
+    # TODO: Change the number of output channels of the skip() network to the number of cuts we are trying to deblur
+    #       Logic of deblurring with 3D filter will probably be the same for both approaches
+    net = skip(input_depth, 1,
                 num_channels_down = [128, 128, 128, 128, 128],
                 num_channels_up   = [128, 128, 128, 128, 128],
                 num_channels_skip = [16, 16, 16, 16, 16],
@@ -128,23 +130,30 @@ for f in files_source:
         net_input_saved.data).normal_()
     out_x = net(net_input)
     out_k = net_kernel(net_input_kernel)
-    out_k_m = out_k.view(-1, 1, opt.kernel_size[0], opt.kernel_size[1])
+    out_k_m = out_k.view(-1, 1, opt.kernel_size[0], opt.kerlonel_size[1])
     out_y = nn.functional.conv2d(out_x, out_k_m, padding=0, bias=None)
 
     #########################
     ### DELETE FROM HERE
     # Initialization for Inner-Loop Generation
+
+    # Create auxiliary kernel, i.e: gaussian kernel
     gauss = guass_gen(k_size=(opt.kernel_size[0], opt.kernel_size[1]), var=3, samp_size=(opt.Gsize, opt.Gsize))
     psf_gauss = torch.from_numpy(gauss)[None, None, :].to(device).type(torch.float32)
-
-    temp_ker = psf_gauss
+    temp_ker = psf_gauss.clone()
     temp_ker.requires_grad = True
+
     param_img = [temp_ker]
+
+    # Optimizer of the auxiliary kernel
     optimizerVar = torch.optim.Adam(param_img, lr=1e-6)
-    k_sch = int(padh/10)
+    k_sch = int(padh/10)  #Check what is this value, it sounds like it is zero except for very large kernels
     schedulerVar = MultiStepLR(optimizerVar, milestones=[k_sch*70, k_sch*(70 + 50), k_sch*(70 + 2*50)], gamma=10)
+
+    # Wiener deconvoluted guidance
     psf_temp = torch.abs(param_img[0]) / torch.sum(torch.abs(param_img[0]))
     img_deconv = wienerF_otf(y, psf_temp, device)
+
     ### DELETE TO HERE
     ####################
 
@@ -158,14 +167,21 @@ for f in files_source:
 
     ### start SelfDeblur
     for step in tqdm(range(num_iter)):
-
         #########################
         ### DELETE FROM HERE
         #DIP-Optimization
+        # Calculate shift and least error of the kernel
         L_mse_G_outk_gen, k_num, mov_ker, tar_ker = shifter_kernel(torch.flip(psf_temp, [3, 2]).detach(), out_k_m, int(padh / 2))
+
+        if k_num.item() != 220:
+            print('stop')
+            print('stooop')
+
+        # Shift the deconvoluted image too
         mov_img, tar_img = shifter_Kinput(img_deconv.detach(),
                                           out_x[:, :, padh // 2:padh // 2 + img_size[1], padw // 2:padw // 2 + img_size[2]],
                                           k_num, maxshift=int(padh / 2))
+
         L_mse_X_outx_gen = mse(mov_img.detach(), tar_img)
         L_mse_X_outx_gen_SSIM = 1 - ssim(mov_img.detach(), tar_img)
         ### DELETE TO HERE
@@ -193,7 +209,7 @@ for f in files_source:
 
         #########################
         ### DELETE FROM HERE
-        #Wiener-Deconvolution Optimization
+        #Wiener-Deconvolution Optimization (rather the other part of HQS)
         net_input = net_input_saved + reg_noise_std * torch.zeros(net_input_saved.shape).type_as(net_input_saved.data).normal_()
         out_x = net(net_input)
         out_k = net_kernel(net_input_kernel)
