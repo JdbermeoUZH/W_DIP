@@ -11,10 +11,12 @@ from skimage.io import imsave
 import warnings
 from tqdm import tqdm
 from torch.optim.lr_scheduler import MultiStepLR
+from torch.nn.functional import mse_loss
+from torchmetrics.functional import peak_signal_noise_ratio
 import pandas as pd
 
 from utils.common_utils import *
-from utils.SSIM import SSIM
+from utils.SSIM import SSIM, ssim
 from utils.deconv_utils import wienerF_otf, shifter_kernel, shifter_Kinput, guass_gen
 
 parser = argparse.ArgumentParser()
@@ -59,6 +61,7 @@ for f in files_source:
     reg_noise_std = 0.001
 
     path_to_image = f
+    path_to_gt_image = os.path.join(*f.split('/')[:-2], 'gt', f.split('/')[-1].split('_')[0] + '.png')
     imgname = os.path.basename(f)
     imgname = os.path.splitext(imgname)[0]
 
@@ -69,13 +72,22 @@ for f in files_source:
         _, imgs = get_image(path_to_image, -1)  # load image and convert to np.
         y = np_to_torch(imgs).to(device)
         img_size = imgs.shape
+
+        # LOAD GT
+        _, imgs_gt = get_image(path_to_gt_image, -1)  # load image and convert to np.
+        y_gt = np_to_torch(imgs_gt).to(device)
     if opt.channels == 3:
         img, y, cb, cr = readimg(path_to_image)
         y = np.float32(y / 255.0)
         y = np.expand_dims(y, 0)
         img_size = y.shape
         y = np_to_torch(y).to(device)
-    ### DELETE TO HERE
+
+        # LOAD GT
+        img_gt, y_gt, cb_gt, cr_gt = readimg(path_to_gt_image)  # load image and convert to np.
+        y_gt = np.float32(y_gt / 255.0)
+        y_gt = np.expand_dims(y_gt, 0)
+        y_gt = np_to_torch(y_gt).to(device)    ### DELETE TO HERE
     ####################
 
     print(imgname)
@@ -130,7 +142,7 @@ for f in files_source:
         net_input_saved.data).normal_()
     out_x = net(net_input)
     out_k = net_kernel(net_input_kernel)
-    out_k_m = out_k.view(-1, 1, opt.kernel_size[0], opt.kerlonel_size[1])
+    out_k_m = out_k.view(-1, 1, opt.kernel_size[0], opt.kernel_size[1])
     out_y = nn.functional.conv2d(out_x, out_k_m, padding=0, bias=None)
 
     #########################
@@ -160,9 +172,23 @@ for f in files_source:
     loss_history = {
         'total': [],
         'data_fitting_term': [],
-        'wiener_term': [],
-        'gen_kernel_similarity_to_init_kernel': [],
-        'l2_reg_kernel': []
+        'estim_vol_to_wiener_deconv_estim_w_weight': [],
+        'estim_vol_to_wiener_deconv_estim_wo_weight': [],
+        'gen_kernel_similarity_to_init_kernel_w_weight': [],
+        'gen_kernel_similarity_to_init_kernel_wo_weight': [],
+        'l2_reg_kernel_w_weight': [],
+        'l2_reg_kernel_wo_weight': [],
+        'blurred_img_to_ground_truth': [],
+        'wiener_deconv_estim_to_ground_truth': [],
+        'estim_img_to_ground_truth_mse': [],
+        'estim_img_to_ground_truth_psnr': [],
+        'estim_img_to_ground_truth_ssim': [],
+        'blurred_img_to_ground_truth_mse': [],
+        'blurred_img_to_ground_truth_psnr': [],
+        'blurred_img_to_ground_truth_ssim': [],
+        'wiener_deconv_estim_to_ground_truth_mse': [],
+        'wiener_deconv_estim_to_ground_truth_psnr': [],
+        'wiener_deconv_estim_to_ground_truth_ssim': []
     }
 
     ### start SelfDeblur
@@ -193,14 +219,30 @@ for f in files_source:
         if step < opt.loss_switch:
             total_loss = L_MSE + opt.wa * L_mse_X_outx_gen + opt.wb * L_mse_G_outk_gen
             loss_history['data_fitting_term'].append(L_MSE.item())
-            loss_history['wiener_term'].append((opt.wa * L_mse_X_outx_gen).item())
+            loss_history['estim_vol_to_wiener_deconv_estim_w_weight'].append((opt.wa * L_mse_X_outx_gen).item())
+            loss_history['estim_vol_to_wiener_deconv_estim_wo_weight'].append((L_mse_X_outx_gen).item())
         else:
             total_loss = L_SSIM + opt.wa * L_mse_X_outx_gen_SSIM + opt.wb * L_mse_G_outk_gen
             loss_history['data_fitting_term'].append(L_SSIM.item())
-            loss_history['wiener_term'].append((opt.wa * L_mse_X_outx_gen_SSIM).item())
+            loss_history['estim_vol_to_wiener_deconv_estim_w_weight'].append((opt.wa * L_mse_X_outx_gen_SSIM).item())
+            loss_history['estim_vol_to_wiener_deconv_estim_wo_weight'].append((L_mse_X_outx_gen).item())
 
         loss_history['total'].append(total_loss.item())
-        loss_history['gen_kernel_similarity_to_init_kernel'].append((opt.wb * L_mse_G_outk_gen).item())
+        loss_history['gen_kernel_similarity_to_init_kernel_w_weight'].append((opt.wb * L_mse_G_outk_gen).item())
+        loss_history['gen_kernel_similarity_to_init_kernel_wo_weight'].append((L_mse_G_outk_gen).item())
+
+        loss_history['estim_img_to_ground_truth_mse'] = mse_loss(out_x[:, :, padh // 2:padh // 2 + img_size[1], padw // 2:padw // 2 + img_size[2]], y_gt).item()
+        loss_history['estim_img_to_ground_truth_psnr'] = peak_signal_noise_ratio(out_x[:, :, padh // 2:padh // 2 + img_size[1], padw // 2:padw // 2 + img_size[2]], y_gt).item()
+        loss_history['estim_img_to_ground_truth_ssim'] = ssim(out_x[:, :, padh // 2:padh // 2 + img_size[1], padw // 2:padw // 2 + img_size[2]], y_gt).item()
+
+        loss_history['blurred_img_to_ground_truth_mse'] = mse_loss(y, y_gt).item()
+        loss_history['blurred_img_to_ground_truth_psnr'] = peak_signal_noise_ratio(y, y_gt).item()
+        loss_history['blurred_img_to_ground_truth_ssim'] = ssim(y, y_gt).item()
+
+        loss_history['wiener_deconv_estim_to_ground_truth_mse'] = mse_loss(img_deconv, y_gt).item()
+        loss_history['wiener_deconv_estim_to_ground_truth_psnr'] = peak_signal_noise_ratio(img_deconv, y_gt).item()
+        loss_history['wiener_deconv_estim_to_ground_truth_ssim'] = ssim(img_deconv, y_gt).item()
+
 
         total_loss.backward()
         optimizer.step()
@@ -229,7 +271,8 @@ for f in files_source:
         else:
             L_G = opt.wa * L_mse_X_outx_G_SSIM + opt.wb * L_mse_G_outk_G + opt.wk*L_Kreg
 
-        loss_history['l2_reg_kernel'].append((opt.wk*L_Kreg).item())
+        loss_history['l2_reg_kernel_w_weight'].append((opt.wk * L_Kreg).item())
+        loss_history['l2_reg_kernel_wo_weight'].append(L_Kreg.item())
 
         L_G.backward()
         optimizerVar.step()
@@ -283,7 +326,7 @@ for f in files_source:
 
     # Store history of loss tems and loss function
     pd.DataFrame(loss_history).to_csv(
-        os.path.join(os.path.dirname(path_save_image), 'loss_history.csv')
+        os.path.join(os.path.dirname(path_save_image), f'loss_history.csv')
     )
 
     del out_x
