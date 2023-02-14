@@ -52,7 +52,6 @@ files_source.sort()
 save_path = opt.save_path
 os.makedirs(save_path, exist_ok=True)
 
-print('hallooo')
 print(files_source)
 print(opt.data_path)
 # start #image
