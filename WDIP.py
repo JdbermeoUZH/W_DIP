@@ -3,6 +3,7 @@ import argparse
 import os
 
 import pandas
+from prettytable import PrettyTable
 
 from networks.skip import skip
 from networks.fcn import *
@@ -51,6 +52,19 @@ files_source = glob.glob(os.path.join(opt.data_path, '*.png'))
 files_source.sort()
 save_path = opt.save_path
 os.makedirs(save_path, exist_ok=True)
+
+def count_parameters(model):
+    table = PrettyTable(["Modules", "Parameters"])
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad: continue
+        params = parameter.numel()
+        table.add_row([name, params])
+        total_params += params
+    print(table)
+    print(f"Total Trainable Params: {total_params} \n")
+    return total_params
+
 
 print(files_source)
 print(opt.data_path)
@@ -117,6 +131,8 @@ for f in files_source:
                 need_sigmoid=True, need_bias=True, pad=pad, act_fun='LeakyReLU', drop=True)
     net = net.to(device)
 
+    count_parameters(net)
+
     '''
     k_net:
     '''
@@ -126,6 +142,7 @@ for f in files_source:
 
     net_kernel = fcn(n_k, opt.kernel_size[0]*opt.kernel_size[1])
     net_kernel = net_kernel.to(device)
+    count_parameters(net_kernel)
 
     # Losses
     mse = torch.nn.MSELoss().to(device)
