@@ -227,8 +227,8 @@ for f in files_source:
         ### DELETE TO HERE
         ####################
 
-        L_MSE = mse(out_y, y)
-        L_SSIM = 1 - ssim(out_y, y)
+        L_MSE = mse(out_y, y_gt)#y)
+        L_SSIM = 1 - ssim(out_y, y_gt)
 
         if step < opt.loss_switch:
             total_loss = L_MSE + opt.wa * L_mse_X_outx_gen + opt.wb * L_mse_G_outk_gen
